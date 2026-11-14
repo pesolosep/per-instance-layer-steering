@@ -1,10 +1,4 @@
-# Method implementation — anonymous code release
-
-Anonymised, self-contained code implementing the paper's method and the baselines it
-is compared against. Nothing outside this repository is imported.
-
-Author-identifying paths, repository URLs and account names have been replaced with
-placeholders (`/path/to/...`, `ANONYMOUS`). Substitute your own values to run it.
+# Method implementation 
 
 **Scope: method + deployable recipe.** This repository runs the steering
 pipeline end to end (raw per-instance parquets) and then trains and evaluates
