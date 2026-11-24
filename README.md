@@ -8,6 +8,18 @@ numbers — see [Scope of this release](#scope-of-this-release).
 
 ---
 
+## Data splits for all 135 Persona traits
+
+[Download the split assignments](Dataset/persona135-splits.json). For every trait, the manifest lists the zero-based source line numbers in split order and the SHA-256 hashes of the source and each generated JSONL file. The assignments and all 405 output checksums were verified against the archived experiment splits. The six main-study traits are also included as JSONL files.
+
+To rebuild all splits using the Python standard library, run this command from the repository root.
+
+```sh
+python3 prep/build_persona_all.py --fetch
+```
+
+The script downloads the [pinned Anthropic Persona data](https://github.com/anthropics/evals/tree/84fcc677e52e1902d696c32cd1a6b663e70d3993/persona), verifies the manifest, and writes the files to `Dataset/Anth_Persona_ALL/`. To use a local copy, replace `--fetch` with `--source /path/to/evals/persona`. Add `--dry-run` to verify the splits without writing the output files. Each trait uses its own seed-38 shuffle. The experiments use `train` for steering-vector extraction, `val` for predictor training and fixed-set selection, and `test` for evaluation.
+
 ## Layout
 
 | Path | What it is |
@@ -26,7 +38,7 @@ numbers — see [Scope of this release](#scope-of-this-release).
 | `strategies/` | Deployable selection strategies (`base`, `joint_k`, `score_sum`) |
 | `eval/` | Metrics: logit, coherency, diagnostic, statistics |
 | `models/` | Model loading |
-| `Dataset/` | `Anth_Persona_ALL` — the six Anthropic-Persona traits |
+| `Dataset/` | Split assignments for all 135 traits and JSONL files for the six main-study traits |
 | `runners/oracle_full_pipeline/` | The end-to-end GPU driver (see below) |
 | `scripts/` | The deployable recipe: ranker training, direction classifier, adaptive-K gate, compass baseline (see Scope) |
 
