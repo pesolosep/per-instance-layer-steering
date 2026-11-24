@@ -1,121 +1,43 @@
-# Method implementation 
+# Deployable Per-Instance Multi-Layer Activation Steering for Large Language Models
 
-**Scope: method + deployable recipe.** This repository runs the steering
-pipeline end to end (raw per-instance parquets) and then trains and evaluates
-the deployable recipe on them (`scripts/`). It deliberately does **not**
-contain the table/figure-building code that turns results into the paper's
-numbers — see [Scope of this release](#scope-of-this-release).
+Research code and data splits accompanying the paper by **Muhammad Faishal Adly Nelwan and Alfan Farizki Wicaksono**, accepted to **Findings of EACL 2027**.
 
----
+The paper asks which layers of a frozen language model to steer for a given prompt and how many layers to use. The repository implements the layer-selection experiments and **W2S-Multi**, the learned selector. During training, Top-K-Marginal (TKM) scores each layer by how much steering it increases the probability of the gold answer. At inference, W2S-Multi ranks layers from a prompt embedding, a classifier infers the target answer direction, and an adaptive gate decides how many ranked layers to use. This procedure requires no test labels.
 
-## Data splits for all 135 Persona traits
+The main study evaluates six binary Persona traits on Llama-3-8B-Instruct and Aya Expanse 8B. Appendix I extends the evaluation to all 135 Persona traits. The released training and evaluation scripts implement the six-trait study. The data release covers all 135 traits, including the exact assignments for the separately seeded extension runs.
 
-[Download the split assignments](Dataset/persona135-splits.json). For every trait, the manifest lists the zero-based source line numbers in split order and the SHA-256 hashes of the source and each generated JSONL file. The assignments and all 405 output checksums were verified against the archived experiment splits. The six main-study traits are also included as JSONL files.
+## Reproduce the data splits
 
-To rebuild all splits using the Python standard library, run this command from the repository root.
+To reconstruct the 405 train, validation, and test files, run this command from the repository root. It requires only the Python standard library and internet access.
 
 ```sh
 python3 prep/build_persona_all.py --fetch
 ```
 
-The script downloads the [pinned Anthropic Persona data](https://github.com/anthropics/evals/tree/84fcc677e52e1902d696c32cd1a6b663e70d3993/persona), verifies the manifest, and writes the files to `Dataset/Anth_Persona_ALL/`. To use a local copy, replace `--fetch` with `--source /path/to/evals/persona`. Add `--dry-run` to verify the splits without writing the output files. Each trait uses its own seed-38 shuffle. The experiments use `train` for steering-vector extraction, `val` for predictor training and fixed-set selection, and `test` for evaluation.
+The builder downloads a pinned revision of Anthropic’s Persona dataset and checks the splits against the released manifest. The manifest records the zero-based source line numbers in output order and SHA-256 checksums for each source and split file. All 405 rebuilt files matched the archived experimental inputs byte for byte. [Split manifest](Dataset/persona135-splits.json) · [Pinned source dataset](https://github.com/anthropics/evals/tree/84fcc677e52e1902d696c32cd1a6b663e70d3993/persona)
 
-## Layout
+The files are written to `Dataset/Anth_Persona_ALL/`, which already contains the six main-study traits. The experiments use `train` to extract steering vectors, `val` to train predictors and select fixed layer sets, and `test` for held-out evaluation. For a local dataset checkout, use `--source /path/to/evals/persona` in place of `--fetch`. Add `--dry-run` to verify without writing the split files.
 
-| Path | What it is |
-|---|---|
-| `globalenv.py` | Model presets (`LLAMA_8B`, `AYA_8B`, …), task registry, seed |
-| `dataset.py` | Dataset loading + tokenisation (train / val / test splits) |
-| `model_wrapper.py` | Wraps the frozen model: activation capture + vector injection |
-| `get_vec.py` | Steering-vector extraction (CAA mean-difference / PCA) |
-| `get_score.py` | LayerNavigator steerability score per layer (discriminability, consistency) |
-| `strategy.py` | Layer selection from those scores (the LN-global rule) |
-| `get_results.py` | Logit readout and text generation |
-| `main.py` | Minimal local driver, upstream-LayerNavigator-style; see note below |
-| `utils.py` | Shared helpers |
-| `prep/` | Offline prep: persona data, model download, vector building, GPT-2 PPL judge |
-| `oracle/` | Per-instance oracle harness: `gt_global`, `tkm`, `joint_k` × `alignonly`/`multimetric` |
-| `strategies/` | Deployable selection strategies (`base`, `joint_k`, `score_sum`) |
-| `eval/` | Metrics: logit, coherency, diagnostic, statistics |
-| `models/` | Model loading |
-| `Dataset/` | Split assignments for all 135 traits and JSONL files for the six main-study traits |
-| `runners/oracle_full_pipeline/` | The end-to-end GPU driver (see below) |
-| `scripts/` | The deployable recipe: ranker training, direction classifier, adaptive-K gate, compass baseline (see Scope) |
+## Follow the six-trait experiments
 
-### Why the root `.py` files are not inside a `core/` package
+| Stage | What the code does | Entry point |
+| --- | --- | --- |
+| Prepare models and vectors | Stage the model weights and compute a contrastive steering vector for each layer. | [Preparation guide](prep/README.md) |
+| Score candidate layers | Run one trait and model at a time on a GPU. Single-layer effects supply the TKM training targets. Exhaustive search over sets of up to three layers supplies the gold-aware reference. | [GPU runner guide](runners/oracle_full_pipeline/README.md) |
+| Train the ranker | Fit layer rankings using the training targets and prompt embeddings. The paper’s ranker uses 25 principal components and a listwise objective. | [Predictor training](scripts/train_final_predictors.py) |
+| Evaluate steering | Infer direction, select layers, and measure answer alignment and generation quality with a fixed layer count or the adaptive gate. | [Evaluation driver](scripts/run_final_predictor_full_eval.py) · [Gate implementation](scripts/adaptive_k_across_predictors.py) |
 
-`eval/` does `import globalenv`, and the root modules import each other as
-top-level modules. Nesting them under `core/` would break every one of those
-imports. The original flat layout is preserved so the copy runs unmodified.
+The GPU notebooks produce per-instance scores and steering outputs. The predictor scripts also expect cached prompt embeddings and feature tables in the experiment directory layout. Consult the loaders for the expected paths and formats. Model weights, intermediate result files, and the scripts used to typeset the paper’s tables and figures are outside the release. [Data loaders](scripts/predictor_eda/_util.py)
 
-Verified: all files byte-compile, and the folder is **import-closed** — every
-non-third-party import resolves to a module inside this folder.
+## Citation
 
----
-
-## Running it
-
-The heavy compute was designed for Kaggle GPU sessions, not a laptop.
-
-**`runners/oracle_full_pipeline/`** is the real entry point. One notebook produces
-every parquet for a single `(task, model)` cell:
-
-| Phase | Output |
-|---|---|
-| A — Search | `K{1,2,3}_exhaustive`, `K{2..5}_beam-W4`, `K{1..5}_lnglobal`, `baseline` |
-| B — Picks | `method_picks.parquet` (methods × K × α × instances) |
-| C — Steered eval + explain | `method_picks_eval.parquet`, `explain_texts_picks.parquet` |
-| D — GPT-2 PPL | `ppl_scores_picks.parquet` |
-
-Covers K ∈ {1..5}, exhaustive only where feasible (K ≤ 3), beam-W4 for K ∈ {2..5},
-both α schedules (uniform, sqrt-norm). TKM and GT-global are derived from the K=1
-trivial pass with no extra forward passes.
-
-`build_notebook.py` is the **source of truth**; the `.ipynb` is generated from it:
-
-```bash
-python runners/oracle_full_pipeline/build_notebook.py
+```bibtex
+@inproceedings{nelwan-wicaksono-2027-deployable,
+  title     = {Deployable Per-Instance Multi-Layer Activation Steering for Large Language Models},
+  author    = {Nelwan, Muhammad Faishal Adly and Wicaksono, Alfan Farizki},
+  booktitle = {Findings of the Association for Computational Linguistics: EACL 2027},
+  year      = {2027}
+}
 ```
 
-Never hand-edit the `.ipynb` — it is a derived artifact.
-
-Before that, `prep/` stages the model weights, the codebase, and the CAA vectors as
-Kaggle Datasets. Start at `prep/README.md`.
-
-`main.py` is **not** the pipeline entry point. It is a minimal local reproduction of
-upstream LayerNavigator's `main.py`, kept for smoke-testing on one model.
-
-Set the model checkpoint path in `globalenv.py` before anything else.
-
-### Dependencies
-
-`numpy`, `pandas`, `scipy`, `scikit-learn`, `torch`, `transformers`,
-`huggingface_hub`, `tqdm`, `nbformat`. See `requirements.txt`.
-
----
-
-## Scope of this release
-
-This repository contains the steering method, its baselines, and the deployable
-recipe. `scripts/` holds the recipe layer, which consumes the parquets the
-pipeline produces:
-
-| Script | What it is |
-|---|---|
-| `train_final_predictors.py` (+ `final_predictor_models.py`, `train_mlp_predictors.py`) | trains the ranker variants, incl. the deployed PCA-25 listwise MLP |
-| `run_final_predictor_full_eval.py` | deployment driver: predicted picks, embedding-logreg direction classifier, adaptive-K gate walk, steered evaluation |
-| `eval_final_predictors_static_k.py`, `eval_final_predictors_adaptive.py` | fixed-K and gated evaluation (gate config in `GATE_CFG`) |
-| `adaptive_k_across_predictors.py` | `gate_walk` reference implementation |
-| `backfill_adaptive_gate.py` | gate reconstruction from K1-5 trajectories (validated ~99% exact-K match) |
-| `compass_all_cells_final.py` | probe-based compass baseline (appendix comparison) |
-
-**Run order:** the GPU pipeline (`runners/`) produces the per-instance parquets;
-`scripts/` then trains and evaluates the recipe on them. The `scripts/` layer is
-not runnable before the pipeline stages have produced their outputs.
-
-Deliberately not part of this release:
-
-| What | Why excluded |
-|---|---|
-| Paper table/figure builders | produces the paper's numbers, not the method |
-| Result artifacts (~35 GB of parquets/CSVs) | data, not code |
+The Persona statements and labels come from Anthropic’s model-written evaluations (Perez et al.). The six main-study traits follow the LayerNavigator evaluation by Sun et al. The split assignments preserve the original statements and labels. [Upstream data license](https://github.com/anthropics/evals/blob/84fcc677e52e1902d696c32cd1a6b663e70d3993/LICENSE)
